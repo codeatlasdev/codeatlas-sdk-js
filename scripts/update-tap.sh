@@ -15,22 +15,22 @@ class Codeatlas < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/codeatlasdev/codeatlas-sdk-js/releases/download/v#{version}/codeatlas-#{version}-darwin-arm64.tar.gz"
+      url "https://github.com/codeatlasdev/codeatlas-sdk-js/releases/download/v$VERSION/codeatlas-$VERSION-darwin-arm64.tar.gz"
       sha256 "$(sum darwin-arm64)"
     end
     on_intel do
-      url "https://github.com/codeatlasdev/codeatlas-sdk-js/releases/download/v#{version}/codeatlas-#{version}-darwin-x64.tar.gz"
+      url "https://github.com/codeatlasdev/codeatlas-sdk-js/releases/download/v$VERSION/codeatlas-$VERSION-darwin-x64.tar.gz"
       sha256 "$(sum darwin-x64)"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/codeatlasdev/codeatlas-sdk-js/releases/download/v#{version}/codeatlas-#{version}-linux-arm64.tar.gz"
+      url "https://github.com/codeatlasdev/codeatlas-sdk-js/releases/download/v$VERSION/codeatlas-$VERSION-linux-arm64.tar.gz"
       sha256 "$(sum linux-arm64)"
     end
     on_intel do
-      url "https://github.com/codeatlasdev/codeatlas-sdk-js/releases/download/v#{version}/codeatlas-#{version}-linux-x64.tar.gz"
+      url "https://github.com/codeatlasdev/codeatlas-sdk-js/releases/download/v$VERSION/codeatlas-$VERSION-linux-x64.tar.gz"
       sha256 "$(sum linux-x64)"
     end
   end
