@@ -11,7 +11,6 @@ cat > "$tmp/Formula/codeatlas.rb" <<RUBY
 class Codeatlas < Formula
   desc "CLI for the public CodeAtlas API (services catalog)"
   homepage "https://codeatlas.com.br"
-  version "$VERSION"
   license "MIT"
 
   on_macos do
