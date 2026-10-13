@@ -9,6 +9,7 @@ import { CodeAtlas, CodeAtlasError } from "../src/index.ts";
 function server() {
   const calls: { url: string; headers: Headers; body: string }[] = [];
   let tokens = 0;
+  let polls = 0;
   const srv = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -42,6 +43,29 @@ function server() {
           return json({ error: { code: "bad_request", message: "email", hint: "Use a valid email." } }, 400);
         }
         return json({ data: { id: "cr_1", status: "received", delivery: "stored", created_at: "2026-01-01T00:00:00Z" } }, 201);
+      }
+      const auth = req.headers.get("authorization")?.startsWith("Bearer tok");
+      if (url.pathname === "/api/v1/services/batch") {
+        const { slugs } = JSON.parse(body) as { slugs: string[] };
+        return json({
+          count: slugs.length,
+          results: slugs.map((slug) =>
+            slug === "known"
+              ? { slug, status: 200, data: { slug } }
+              : { slug, status: 404, error: { code: "not_found", message: "no", hint: "list" } }
+          ),
+        });
+      }
+      if (url.pathname === "/api/v1/exports" && req.method === "POST") {
+        if (!auth) return json({ error: { code: "unauthorized", message: "no", hint: "x" } }, 401);
+        return json({ data: { id: "exp_1", status: "queued", format: JSON.parse(body).format, download_url: null, created_at: "t", expires_at: "t" } }, 202);
+      }
+      if (url.pathname === "/api/v1/exports/exp_1") {
+        const status = ++polls < 3 ? "running" : "succeeded";
+        return json({ data: { id: "exp_1", status, format: "csv", download_url: status === "succeeded" ? "https://x/d" : null, created_at: "t", expires_at: "t" } });
+      }
+      if (url.pathname === "/api/v1/exports/exp_1/download") {
+        return new Response("slug,name\r\nknown,Known\r\n", { headers: { "content-type": "text/csv" } });
       }
       return json({ error: { code: "not_found", message: "x", hint: "y" } }, 404);
     },
@@ -109,5 +133,43 @@ describe("write API wire contract", () => {
     } finally {
       srv.stop(true);
     }
+  });
+
+  test("services.batch returns per-item results without throwing on unknown slugs", async () => {
+    const { srv, origin } = server();
+    try {
+      const client = new CodeAtlas({ fetch: rewritingFetch(origin), baseUrl: `${origin}/api/v1` });
+      const results = await client.services.batch(["known", "nope"]);
+      expect(results.map((r) => [r.slug, r.status])).toEqual([["known", 200], ["nope", 404]]);
+      expect(results[1]?.error?.code).toBe("not_found");
+    } finally {
+      srv.stop(true);
+    }
+  });
+
+  test("exports: create, wait until succeeded, download", async () => {
+    const { srv, origin } = server();
+    try {
+      const f = rewritingFetch(origin);
+      const client = new CodeAtlas({ credentials: { clientId: "ca_1", clientSecret: "cas_1" }, fetch: f });
+      const job = await client.exports.create("csv");
+      expect(job.status).toBe("queued");
+      const done = await client.exports.wait(job.id, { intervalMs: 5 });
+      expect(done.status).toBe("succeeded");
+      expect(await client.exports.download(job.id)).toBe("slug,name\r\nknown,Known\r\n");
+    } finally {
+      srv.stop(true);
+    }
+  });
+
+  test("exports.wait rejects when the job never finishes", async () => {
+    const never = new CodeAtlas({
+      credentials: { clientId: "ca_1", clientSecret: "cas_1" },
+      fetch: (async (input: RequestInfo | URL) =>
+        String(input).includes("/oauth2/token")
+          ? Response.json({ access_token: "tok", expires_in: 3600 })
+          : Response.json({ data: { id: "exp_1", status: "running", format: "csv", download_url: null, created_at: "t", expires_at: "t" } })) as typeof fetch,
+    });
+    await expect(never.exports.wait("exp_1", { intervalMs: 5, timeoutMs: 30 })).rejects.toThrow("still running");
   });
 });

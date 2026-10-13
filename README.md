@@ -52,6 +52,14 @@ const request = await client.contactRequests.create(
 console.log(request.id, request.status); // cr_..., "received"
 ```
 
+```ts
+const results = await client.services.batch(["zelvo-ai", "consultoria"]); // up to 50; unknown slugs are 404 items
+
+const job = await client.exports.create("csv"); // "jsonl" | "csv" | "md"; 10 per hour per client
+await client.exports.wait(job.id);
+const file = await client.exports.download(job.id);
+```
+
 Use `SANDBOX_BASE_URL` as `baseUrl` to validate calls without storing or sending anything.
 The SDK fetches and caches the OAuth token (client credentials) for you.
 
@@ -62,11 +70,13 @@ codeatlas services list [--limit N] [--cursor C] [--json]
 codeatlas services get <slug> [--json]
 codeatlas services search <query> [--json]
 codeatlas health
+codeatlas services batch <slug> [<slug>...]
 codeatlas register <client-name>
+codeatlas export <jsonl|csv|md> [--out FILE]
 codeatlas contact --name "Ana Souza" --email ana@example.com --message "..." [--sandbox]
 ```
 
-`register` prints the `CODEATLAS_CLIENT_ID` / `CODEATLAS_CLIENT_SECRET` exports that `contact` reads.
+`register` prints the `CODEATLAS_CLIENT_ID` / `CODEATLAS_CLIENT_SECRET` exports that `contact` and `export` read.
 
 Override the API with `--base-url` or `CODEATLAS_API_URL`.
 

@@ -16,7 +16,9 @@ Usage:
   codeatlas services list [--limit N] [--cursor C] [--json]
   codeatlas services get <slug> [--json]
   codeatlas services search <query> [--json]
+  codeatlas services batch <slug> [<slug>...] [--json]
   codeatlas health [--json]
+  codeatlas export <jsonl|csv|md> [--out FILE] [--json]   (needs credentials)
   codeatlas register <client-name> [--json]
   codeatlas contact --name N --email E --message M [--company C] [--service SLUG]
                     [--locale pt-BR|en] [--idempotency-key K] [--sandbox] [--json]
@@ -130,6 +132,23 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  if (group === "export") {
+    const format = action;
+    if (format !== "jsonl" && format !== "csv" && format !== "md") {
+      throw new Error("Usage: codeatlas export <jsonl|csv|md> [--out FILE]");
+    }
+    const job = await client.exports.wait((await client.exports.create(format)).id);
+    const file = await client.exports.download(job.id);
+    const outPath = typeof flags.out === "string" ? flags.out : undefined;
+    if (outPath) {
+      await (await import("node:fs/promises")).writeFile(outPath, file);
+      out({ data: job, file: outPath }, () => `${job.id} ${job.status}: wrote ${outPath}`);
+    } else {
+      process.stdout.write(file.endsWith("\n") ? file : `${file}\n`);
+    }
+    return 0;
+  }
+
   if (group === "services") {
     if (action === "list") {
       const limit = typeof flags.limit === "string" ? Number(flags.limit) : undefined;
@@ -149,6 +168,16 @@ async function main(): Promise<number> {
       if (!slug) throw new Error("Usage: codeatlas services get <slug>");
       const service = await client.services.get(slug);
       out({ data: service }, () => formatService(service));
+      return 0;
+    }
+    if (action === "batch") {
+      if (rest.length === 0) throw new Error("Usage: codeatlas services batch <slug> [<slug>...]");
+      const results = await client.services.batch(rest);
+      out({ data: results, count: results.length }, () =>
+        results
+          .map((r) => (r.data ? formatService(r.data) : `${r.slug ?? "(invalid)"}  ${r.status} ${r.error?.code ?? ""}: ${r.error?.message ?? ""}`))
+          .join("\n\n")
+      );
       return 0;
     }
     if (action === "search") {

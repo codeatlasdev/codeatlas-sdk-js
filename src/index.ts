@@ -64,6 +64,27 @@ export interface ContactRequest {
   created_at: string;
 }
 
+export interface BatchResult {
+  slug: string | null;
+  /** HTTP-style status of this item: 200, 404 or 400. */
+  status: number;
+  data?: Service;
+  error?: { code: string; message: string; hint: string };
+}
+
+export type ExportFormat = "jsonl" | "csv" | "md";
+
+export interface ExportJob {
+  id: string;
+  status: "queued" | "running" | "succeeded";
+  format: ExportFormat;
+  /** Set when status is "succeeded". */
+  download_url: string | null;
+  created_at: string;
+  /** Jobs and files are kept for 24 hours. */
+  expires_at: string;
+}
+
 export interface Credentials {
   clientId: string;
   clientSecret: string;
@@ -113,6 +134,18 @@ export interface ServicesApi {
   get(slug: string): Promise<Service>;
   iterate(params?: Omit<ListServicesParams, "cursor">): AsyncGenerator<Service>;
   search(query: string): Promise<Service[]>;
+  /** Up to 50 slugs in one call. Unknown slugs come back as 404 items, not as a thrown error. */
+  batch(slugs: string[]): Promise<BatchResult[]>;
+}
+
+export interface ExportsApi {
+  /** Starts an export job (10 per hour per client). Requires `credentials`. */
+  create(format: ExportFormat, options?: { idempotencyKey?: string }): Promise<ExportJob>;
+  get(id: string): Promise<ExportJob>;
+  /** Polls until the job has succeeded. Rejects after `timeoutMs` (default 60000). */
+  wait(id: string, options?: { intervalMs?: number; timeoutMs?: number }): Promise<ExportJob>;
+  /** Downloads the file of a succeeded job as text. */
+  download(id: string): Promise<string>;
 }
 
 export interface ContactRequestsApi {
@@ -168,11 +201,7 @@ export class CodeAtlas {
 
   readonly contactRequests: ContactRequestsApi = {
     create: async (input, options = {}) => {
-      const headers: Record<string, string> = {
-        "content-type": "application/json",
-        authorization: `Bearer ${await this.#accessToken()}`,
-      };
-      if (options.idempotencyKey) headers["idempotency-key"] = options.idempotencyKey;
+      const headers = await this.#authHeaders(options.idempotencyKey);
       const body = await this.#send<{ data: ContactRequest }>(
         "POST",
         `${this.baseUrl}/contact-requests`,
@@ -181,6 +210,50 @@ export class CodeAtlas {
       return body.data;
     },
   };
+
+  readonly exports: ExportsApi = {
+    create: async (format, options = {}) => {
+      const headers = await this.#authHeaders(options.idempotencyKey);
+      const body = await this.#send<{ data: ExportJob }>("POST", `${this.baseUrl}/exports`, {
+        body: JSON.stringify({ format }),
+        headers,
+      });
+      return body.data;
+    },
+    get: async (id) => {
+      const body = await this.#send<{ data: ExportJob }>(
+        "GET",
+        `${this.baseUrl}/exports/${encodeURIComponent(id)}`,
+        { headers: await this.#authHeaders() }
+      );
+      return body.data;
+    },
+    wait: async (id, options = {}) => {
+      const deadline = Date.now() + (options.timeoutMs ?? 60_000);
+      for (;;) {
+        const job = await this.exports.get(id);
+        if (job.status === "succeeded") return job;
+        if (Date.now() >= deadline) {
+          throw new Error(`Export ${id} is still ${job.status} after the timeout.`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, options.intervalMs ?? 1000));
+      }
+    },
+    download: async (id) =>
+      this.#fetchText("GET", `${this.baseUrl}/exports/${encodeURIComponent(id)}/download`, {
+        headers: await this.#authHeaders(),
+        accept: "*/*",
+      }),
+  };
+
+  async #authHeaders(idempotencyKey?: string): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      authorization: `Bearer ${await this.#accessToken()}`,
+    };
+    if (idempotencyKey) headers["idempotency-key"] = idempotencyKey;
+    return headers;
+  }
 
   async #accessToken(): Promise<string> {
     if (!this.#credentials) {
@@ -238,6 +311,15 @@ export class CodeAtlas {
     /** Async iterator over every service, following next_cursor. */
     iterate: (params = {}) => this.#iterate(params),
 
+    batch: async (slugs: string[]): Promise<BatchResult[]> => {
+      const body = await this.#send<{ results: BatchResult[] }>(
+        "POST",
+        `${this.baseUrl}/services/batch`,
+        { body: JSON.stringify({ slugs }), headers: { "content-type": "application/json" } }
+      );
+      return body.results;
+    },
+
     /**
      * Case-insensitive match on name, slug, description, type and
      * capabilities. The API has no search endpoint: this filters the full
@@ -285,28 +367,38 @@ export class CodeAtlas {
     return this.#send<T>(method, `${this.baseUrl}${path}${qs ? `?${qs}` : ""}`);
   }
 
+  /** One request path for everything: returns the raw text, throws CodeAtlasError on non-2xx. */
+  async #fetchText(
+    method: string,
+    url: string,
+    init: { body?: string; headers?: Record<string, string>; accept?: string } = {}
+  ): Promise<string> {
+    const response = await this.#fetch(url, {
+      method,
+      body: init.body,
+      headers: { accept: init.accept ?? "application/json", ...init.headers },
+      signal: AbortSignal.timeout(this.#timeoutMs),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      let body: unknown;
+      try {
+        body = text ? JSON.parse(text) : undefined;
+      } catch {
+        body = undefined;
+      }
+      throw toError(response.status, body);
+    }
+    return text;
+  }
+
   async #send<T>(
     method: string,
     url: string,
     init: { body?: string; headers?: Record<string, string> } = {}
   ): Promise<T> {
-    const response = await this.#fetch(url, {
-      method,
-      body: init.body,
-      headers: { accept: "application/json", ...init.headers },
-      signal: AbortSignal.timeout(this.#timeoutMs),
-    });
-    const text = await response.text();
-    let body: unknown;
-    try {
-      body = text ? JSON.parse(text) : undefined;
-    } catch {
-      body = undefined;
-    }
-    if (!response.ok) {
-      throw toError(response.status, body);
-    }
-    return body as T;
+    const text = await this.#fetchText(method, url, init);
+    return (text ? JSON.parse(text) : undefined) as T;
   }
 }
 
