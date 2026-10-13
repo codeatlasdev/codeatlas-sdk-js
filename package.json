@@ -45,7 +45,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test",
     "build:binaries": "bash scripts/build-binaries.sh",
-    "prepublishOnly": "bun run build"
+    "prepare": "tsc -p tsconfig.json"
   },
   "devDependencies": {
     "@types/bun": "latest",
