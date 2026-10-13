@@ -1,0 +1,55 @@
+{
+  "name": "@codeatlas/sdk",
+  "version": "0.1.0",
+  "description": "Typed client and CLI for the public CodeAtlas API (https://codeatlas.com.br/api/v1).",
+  "license": "MIT",
+  "homepage": "https://codeatlas.com.br",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codeatlasdev/codeatlas-sdk-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/codeatlasdev/codeatlas-sdk-js/issues"
+  },
+  "keywords": [
+    "codeatlas",
+    "sdk",
+    "api-client",
+    "cli"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "codeatlas": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test",
+    "build:binaries": "bash scripts/build-binaries.sh",
+    "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
