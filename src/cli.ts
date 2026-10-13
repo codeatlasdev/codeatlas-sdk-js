@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-import { CodeAtlas, CodeAtlasError, DEFAULT_BASE_URL, type Service } from "./index.js";
+import {
+  CodeAtlas,
+  CodeAtlasError,
+  DEFAULT_BASE_URL,
+  SANDBOX_BASE_URL,
+  type ContactLocale,
+  type Service,
+} from "./index.js";
 
 const VERSION = "0.1.0";
 
@@ -10,10 +17,17 @@ Usage:
   codeatlas services get <slug> [--json]
   codeatlas services search <query> [--json]
   codeatlas health [--json]
+  codeatlas register <client-name> [--json]
+  codeatlas contact --name N --email E --message M [--company C] [--service SLUG]
+                    [--locale pt-BR|en] [--idempotency-key K] [--sandbox] [--json]
 
 Options:
   --json        Print raw JSON
   --base-url U  API base URL (default ${DEFAULT_BASE_URL}, or $CODEATLAS_API_URL)
+  --sandbox     Use the sandbox API: writes are validated, nothing is stored or sent
+
+Write commands need OAuth credentials: run "codeatlas register <name>", then set
+CODEATLAS_CLIENT_ID and CODEATLAS_CLIENT_SECRET.
   -h, --help    Show help
   -v, --version Show version
 
@@ -27,7 +41,7 @@ function parseArgs(argv: string[]) {
     if (arg.startsWith("--")) {
       const [key, inline] = arg.slice(2).split("=", 2);
       if (inline !== undefined) flags[key as string] = inline;
-      else if (["json", "help", "version"].includes(key as string)) flags[key as string] = true;
+      else if (["json", "help", "version", "sandbox"].includes(key as string)) flags[key as string] = true;
       else flags[key as string] = argv[++i] ?? "";
     } else if (arg === "-h") flags.help = true;
     else if (arg === "-v") flags.version = true;
@@ -59,10 +73,14 @@ async function main(): Promise<number> {
   }
 
   const json = flags.json === true;
+  const clientId = process.env.CODEATLAS_CLIENT_ID;
+  const clientSecret = process.env.CODEATLAS_CLIENT_SECRET;
   const client = new CodeAtlas({
     baseUrl:
       (typeof flags["base-url"] === "string" ? flags["base-url"] : undefined) ??
-      process.env.CODEATLAS_API_URL,
+      process.env.CODEATLAS_API_URL ??
+      (flags.sandbox === true ? SANDBOX_BASE_URL : undefined),
+    credentials: clientId && clientSecret ? { clientId, clientSecret } : undefined,
   });
   const out = (value: unknown, text: () => string) =>
     console.log(json ? JSON.stringify(value, null, 2) : text());
@@ -72,6 +90,43 @@ async function main(): Promise<number> {
   if (group === "health") {
     const health = await client.health();
     out(health, () => `${health.status} (${health.service} ${health.version})`);
+    return 0;
+  }
+
+  if (group === "register") {
+    const clientName = [action, ...rest].filter(Boolean).join(" ");
+    if (!clientName) throw new Error("Usage: codeatlas register <client-name>");
+    const registered = await CodeAtlas.register(clientName);
+    out(registered, () =>
+      [
+        `export CODEATLAS_CLIENT_ID=${registered.clientId}`,
+        `export CODEATLAS_CLIENT_SECRET=${registered.clientSecret}`,
+        "# The secret is shown once. Store it.",
+      ].join("\n")
+    );
+    return 0;
+  }
+
+  if (group === "contact") {
+    const str = (key: string) => (typeof flags[key] === "string" ? (flags[key] as string) : undefined);
+    const name = str("name");
+    const email = str("email");
+    const message = str("message");
+    if (!name || !email || !message) {
+      throw new Error("Usage: codeatlas contact --name N --email E --message M [--company C] [--service SLUG] [--locale pt-BR|en]");
+    }
+    const created = await client.contactRequests.create(
+      {
+        name,
+        email,
+        message,
+        company: str("company"),
+        service_slug: str("service"),
+        locale: str("locale") as ContactLocale | undefined,
+      },
+      { idempotencyKey: str("idempotency-key") }
+    );
+    out({ data: created }, () => `${created.id} ${created.status} (${created.delivery})`);
     return 0;
   }
 

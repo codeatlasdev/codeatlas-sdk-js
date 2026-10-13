@@ -39,6 +39,22 @@ try {
 }
 ```
 
+### Contact requests (needs OAuth credentials)
+
+```ts
+const { clientId, clientSecret } = await CodeAtlas.register("my-agent"); // store the secret, it is shown once
+const client = new CodeAtlas({ credentials: { clientId, clientSecret } });
+
+const request = await client.contactRequests.create(
+  { name: "Ana Souza", email: "ana@example.com", message: "Quero um diagnóstico do meu atendimento.", service_slug: "zelvo-ai" },
+  { idempotencyKey: crypto.randomUUID() }
+);
+console.log(request.id, request.status); // cr_..., "received"
+```
+
+Use `SANDBOX_BASE_URL` as `baseUrl` to validate calls without storing or sending anything.
+The SDK fetches and caches the OAuth token (client credentials) for you.
+
 ## CLI
 
 ```sh
@@ -46,7 +62,11 @@ codeatlas services list [--limit N] [--cursor C] [--json]
 codeatlas services get <slug> [--json]
 codeatlas services search <query> [--json]
 codeatlas health
+codeatlas register <client-name>
+codeatlas contact --name "Ana Souza" --email ana@example.com --message "..." [--sandbox]
 ```
+
+`register` prints the `CODEATLAS_CLIENT_ID` / `CODEATLAS_CLIENT_SECRET` exports that `contact` reads.
 
 Override the API with `--base-url` or `CODEATLAS_API_URL`.
 

@@ -1,4 +1,7 @@
 export const DEFAULT_BASE_URL = "https://codeatlas.com.br/api/v1";
+/** Same API with no side effects: writes are validated but nothing is stored or sent. */
+export const SANDBOX_BASE_URL = "https://codeatlas.com.br/api/sandbox/v1";
+const ORIGIN = "https://codeatlas.com.br";
 
 export interface Service {
   slug: string;
@@ -26,9 +29,49 @@ export interface Health {
 
 export type ErrorCode =
   | "bad_request"
-  | "not_found"
+  | "conflict"
+  | "forbidden"
+  | "invalid_client"
+  | "invalid_token"
   | "method_not_allowed"
+  | "not_found"
+  | "payload_too_large"
+  | "rate_limited"
+  | "unauthorized"
+  | "unprocessable"
   | "unsupported_media_type";
+
+export type ContactLocale = "pt-BR" | "en";
+
+export interface ContactRequestInput {
+  /** 2 to 120 characters. */
+  name: string;
+  email: string;
+  /** 10 to 2000 characters. */
+  message: string;
+  company?: string;
+  /** Defaults to pt-BR on the server. */
+  locale?: ContactLocale;
+  /** One of the slugs returned by services.list. */
+  service_slug?: string;
+}
+
+export interface ContactRequest {
+  id: string;
+  status: "received";
+  /** "sandbox" when using the sandbox API; "delivered" or "stored" in production. */
+  delivery: "delivered" | "stored" | "sandbox";
+  created_at: string;
+}
+
+export interface Credentials {
+  clientId: string;
+  clientSecret: string;
+}
+
+export interface RegisteredClient extends Credentials {
+  clientName: string;
+}
 
 export interface ListServicesParams {
   /** Page size, 1 to 100. Default 20. */
@@ -39,6 +82,11 @@ export interface ListServicesParams {
 
 export interface ClientOptions {
   baseUrl?: string;
+  /**
+   * OAuth client credentials, needed for write calls (contactRequests.create).
+   * Get them with CodeAtlas.register().
+   */
+  credentials?: Credentials;
   /** Custom fetch, for tests or runtimes without a global one. */
   fetch?: typeof fetch;
   /** Request timeout in milliseconds. Default 15000. */
@@ -67,15 +115,106 @@ export interface ServicesApi {
   search(query: string): Promise<Service[]>;
 }
 
+export interface ContactRequestsApi {
+  /**
+   * Sends a contact request to the CodeAtlas team. Requires `credentials`.
+   * Pass `idempotencyKey` (8 to 128 printable ASCII characters) to make retries safe.
+   */
+  create(
+    input: ContactRequestInput,
+    options?: { idempotencyKey?: string }
+  ): Promise<ContactRequest>;
+}
+
 export class CodeAtlas {
   readonly baseUrl: string;
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
+  readonly #credentials: Credentials | undefined;
+  #token: { value: string; expiresAt: number } | undefined;
 
   constructor(options: ClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#timeoutMs = options.timeoutMs ?? 15_000;
+    this.#credentials = options.credentials;
+  }
+
+  /**
+   * Registers a new OAuth client (RFC 7591) and returns its credentials.
+   * The secret is shown once: store it.
+   */
+  static async register(
+    clientName: string,
+    options: Pick<ClientOptions, "fetch" | "timeoutMs"> = {}
+  ): Promise<RegisteredClient> {
+    const body = await new CodeAtlas(options).#send<{
+      client_id: string;
+      client_secret: string;
+      client_name: string;
+    }>("POST", `${ORIGIN}/oauth2/register`, {
+      body: JSON.stringify({
+        client_name: clientName,
+        grant_types: ["client_credentials"],
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    return {
+      clientId: body.client_id,
+      clientSecret: body.client_secret,
+      clientName: body.client_name,
+    };
+  }
+
+  readonly contactRequests: ContactRequestsApi = {
+    create: async (input, options = {}) => {
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        authorization: `Bearer ${await this.#accessToken()}`,
+      };
+      if (options.idempotencyKey) headers["idempotency-key"] = options.idempotencyKey;
+      const body = await this.#send<{ data: ContactRequest }>(
+        "POST",
+        `${this.baseUrl}/contact-requests`,
+        { body: JSON.stringify(input), headers }
+      );
+      return body.data;
+    },
+  };
+
+  async #accessToken(): Promise<string> {
+    if (!this.#credentials) {
+      throw new CodeAtlasError(
+        401,
+        "unauthorized",
+        "This call needs OAuth credentials.",
+        "Create them with CodeAtlas.register(name) and pass { credentials } to new CodeAtlas()."
+      );
+    }
+    if (this.#token && this.#token.expiresAt > Date.now() + 30_000) {
+      return this.#token.value;
+    }
+    const { clientId, clientSecret } = this.#credentials;
+    const token = await this.#send<{ access_token: string; expires_in: number }>(
+      "POST",
+      `${ORIGIN}/oauth2/token`,
+      {
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          // The token audience is the API base URL (production or sandbox).
+          resource: this.baseUrl,
+        }).toString(),
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+        },
+      }
+    );
+    this.#token = {
+      value: token.access_token,
+      expiresAt: Date.now() + token.expires_in * 1000,
+    };
+    return token.access_token;
   }
 
   readonly services: ServicesApi = {
@@ -141,16 +280,20 @@ export class CodeAtlas {
     return this.#request<Health>("GET", "/health");
   }
 
-  async #request<T>(
-    method: string,
-    path: string,
-    query?: URLSearchParams
-  ): Promise<T> {
+  #request<T>(method: string, path: string, query?: URLSearchParams): Promise<T> {
     const qs = query?.toString();
-    const url = `${this.baseUrl}${path}${qs ? `?${qs}` : ""}`;
+    return this.#send<T>(method, `${this.baseUrl}${path}${qs ? `?${qs}` : ""}`);
+  }
+
+  async #send<T>(
+    method: string,
+    url: string,
+    init: { body?: string; headers?: Record<string, string> } = {}
+  ): Promise<T> {
     const response = await this.#fetch(url, {
       method,
-      headers: { accept: "application/json" },
+      body: init.body,
+      headers: { accept: "application/json", ...init.headers },
       signal: AbortSignal.timeout(this.#timeoutMs),
     });
     const text = await response.text();
@@ -161,18 +304,25 @@ export class CodeAtlas {
       body = undefined;
     }
     if (!response.ok) {
-      const err = (
-        body as
-          | { error?: { code?: string; message?: string; hint?: string } }
-          | undefined
-      )?.error;
-      throw new CodeAtlasError(
-        response.status,
-        err?.code ?? "unknown_error",
-        err?.message ?? `HTTP ${response.status}`,
-        err?.hint ?? ""
-      );
+      throw toError(response.status, body);
     }
     return body as T;
   }
+}
+
+/** Understands both the API error envelope and OAuth errors (RFC 6749 / 7591). */
+function toError(status: number, body: unknown): CodeAtlasError {
+  const b = (body ?? {}) as {
+    error?: string | { code?: string; message?: string; hint?: string };
+    error_description?: string;
+  };
+  if (typeof b.error === "string") {
+    return new CodeAtlasError(status, b.error, b.error_description ?? b.error, "");
+  }
+  return new CodeAtlasError(
+    status,
+    b.error?.code ?? "unknown_error",
+    b.error?.message ?? `HTTP ${status}`,
+    b.error?.hint ?? ""
+  );
 }
